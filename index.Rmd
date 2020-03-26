@@ -1,0 +1,378 @@
+---
+title: "Kóvitinn"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+```{r global, include=FALSE}
+from.web <- TRUE
+
+# Check out:
+# https://kieranhealy.org/blog/archives/2020/03/21/covid-19-tracking
+
+library(lubridate)
+library(highcharter)
+library(tidyverse)
+library(DT)
+library(shiny)
+source("R/functions.R")
+# could possibly use wb stuff below:
+countries.europa <- 
+  read_rds("data/countries_europa.rds")
+  # screws up the median
+countries.europa <- countries.europa[countries.europa != "San Marino"]
+if(from.web) {
+  DATA <- 
+    read_covid(variable = "confirmed") %>% 
+    covid_tidy() %>%
+    group_by(country, iso3c, date) %>% 
+    summarise(n = sum(n)) %>% 
+    ungroup() %>% 
+    rename(confirmed = n) %>% 
+    left_join(read_covid(variable = "deaths") %>% 
+                covid_tidy() %>% 
+                group_by(country, iso3c, date) %>%
+                summarise(n = sum(n)) %>% 
+                ungroup() %>% 
+                rename(deaths = n)) %>% 
+    mutate(deaths = case_when(country == "Iceland" &
+                                date == ymd("2020-03-15") ~ 0,
+                              TRUE ~ deaths)) %>% 
+    left_join(read_rds("data/wbstats01.rds") %>% 
+                select(iso3c, pop = population))
+  # write_rds(DATA, "data/covid_2020-03-25.rds")
+} else {
+  DATA <- read_rds("data/covid_2020-03-25.rds")
+}
+
+DATAr <- 
+  DATA %>%
+  mutate(confirmed = confirmed / pop * 1e6,
+         deaths = deaths / pop * 1e6) %>% 
+  select(country, iso3c, date, confirmed, deaths) %>% 
+  arrange(country, date) %>% 
+  group_by(country, iso3c) %>% 
+  mutate(day0c = date - min(date[confirmed >= 1]),
+         day0d = date - min(date[deaths >= 1])) %>% 
+  filter(day0c >= 0)
+
+# NOTE: Median europe spooky on 1 day because of
+#       San Marino
+confirmed.europa.median <-
+  DATAr %>%
+  filter(country %in% countries.europa) %>%
+  group_by(day0c) %>%
+  summarise(confirmed = median(confirmed)) %>%
+  ungroup()
+
+res <- list()
+for(i in 0L:20L) {
+  print(i)
+  res[[i + 1]] <-
+    DATA %>%
+    covid_doubling_time(i) %>%
+    mutate(day = i)
+}
+
+confirmed.double <-
+  bind_rows(res)
+
+# creates an error
+#res <- list()
+#for(i in 0L:20L) {
+#  print(i)
+#  res[[i + 1]] <-
+#    DATA %>%
+#    covid_doubling_time(i, variable = deaths) %>%
+#    mutate(day = i)
+#}
+
+deaths.double <-
+  bind_rows(res)
+
+
+countries <-
+  c(countries.europa,   #Europe
+    DATA %>% pull(country) %>% unique() %>% sort()) %>% 
+  unique()
+
+
+
+last.date <- DATA %>% pull(date) %>% max()
+```
+
+Sidebar {.sidebar data-width=175}
+=====================================
+
+```{r}
+selectInput("country", "Select country:",
+            choices = countries,
+            selected = c("Iceland",
+                         "Denmark",
+                         "Estonia",
+                         "Slovenia",
+                         "Sweden",
+                         "Norway",
+                         "Greece",
+                         "Italy",
+                         "Finland",
+                         "Slovakia"),
+            multiple = TRUE)
+radioButtons("log", "Y-scale", c("log", "ordinary"))
+
+# Main path --------------------------------------------------------------------
+output$pconfirmed <- renderPlot({ 
+  p <-
+    ggplot() +
+    theme_bw(base_size = 14) +
+    geom_line(data = confirmed.europa.median,
+              aes(day0c, confirmed),
+              lwd = 2,
+              colour = "yellow") +
+    geom_line(data = DATAr %>%
+                filter(country %in% countries.europa) %>% 
+                rename(group = country),
+              aes(day0c, confirmed, group = group),
+              colour = "grey", alpha = 0.5) +
+    geom_line(data = DATAr %>% filter(country %in% input$country),
+              aes(day0c, confirmed),
+              colour = "darkgreen",
+              lwd = 1) +
+    geom_line(data = DATAr %>% 
+                filter(country %in% input$country,
+                       deaths >= 1),
+              aes(day0c, deaths),
+              colour = "red",
+              lwd = 1) +
+    facet_wrap(~ country) +
+    scale_x_continuous(breaks = seq(0, 50, by = 5),
+                       limits = c(0, 35)) +
+    labs(x = "Days since more than 1 per million confirmed",
+         y = NULL,
+         caption = "Source: https://github.com/CSSEGISandData/COVID-19") +
+    theme(legend.position = "none",
+          panel.grid.minor = element_line(colour = "white"),
+          panel.grid.major = element_line(size = 0.25))
+  
+  if(input$log == "log") {
+    p + scale_y_log10()
+  } else {
+    p
+  }
+  
+})
+
+output$confirmed <- renderUI({ 
+  plotOutput("pconfirmed")
+})
+
+# Confirmed - highchart --------------------------------------------------------
+
+output$p_high_confirmed <- renderHighchart({
+  h <-
+    hchart(DATAr %>% 
+           filter(country %in% input$country) %>% 
+           mutate(confirmed = round(confirmed, 1)),
+         "line", hcaes(x = day0c, y = confirmed, group = country)) %>%
+    hc_add_theme(
+      hc_theme_flatdark(
+        chart = list(
+          backgroundColor = "transparent",
+          divBackgroundImage = "http://www.wired.com/images_blogs/underwire/2013/02/xwing-bg.gif"
+        )
+      )
+    )
+  
+  if(input$log == "log") {
+    h %>%  hc_yAxis(type = "logarithmic", 
+             min = 1)
+  } else {
+    h
+  }
+  
+  
+    
+})
+
+output$high_confirmed <- renderUI({
+  highchartOutput("p_high_confirmed")
+})
+
+# Death - highchart ------------------------------------------------------------
+output$p_high_deaths <- renderHighchart({
+  hchart(DATAr %>% 
+           filter(country %in% input$country,
+                  day0d >= 0) %>% 
+           mutate(deaths = round(deaths, 1)),
+         "line", hcaes(x = day0d, y = deaths, group = country)) %>%
+    hc_add_theme(
+      hc_theme_flatdark(
+        chart = list(
+          backgroundColor = "transparent",
+          divBackgroundImage = "http://www.wired.com/images_blogs/underwire/2013/02/xwing-bg.gif"
+        )
+      )
+    ) %>%
+    hc_yAxis(type = "logarithmic",
+             min = 1)
+})
+
+output$high_deaths <- renderUI({
+  highchartOutput("p_high_deaths")
+})
+```
+
+Most recent date: `r as.character(last.date)`
+
+Confirmed
+=====================================  
+
+Column {.tabset}
+-------------------------------------
+
+
+### Confirmed
+
+```{r}
+uiOutput("confirmed")
+```
+
+### Confirmed - Single graph
+
+```{r}
+uiOutput("high_confirmed")
+```
+
+### Doubling time
+
+```{r}
+renderPlot({
+  confirmed.double %>% 
+    filter(country %in% input$country) %>% 
+    ggplot(aes(-day, z)) +
+    theme_bw(base_size = 14) +
+    geom_point() +
+    geom_smooth() +
+    expand_limits(y = 1) +
+    facet_wrap(~ country) +
+    labs(title = "Doubling time in days of confirmed cases",
+         y = "[days]",
+         x = "Days since present day")
+})
+```
+
+### Proportion confirmed
+
+```{r}
+renderPlot({
+  DATA %>% 
+    filter(date == max(date),
+           country %in% countries.europa) %>% 
+    mutate(p = confirmed / pop) %>% 
+    ggplot(aes(reorder(country, p), p)) +
+    theme_bw(base_size = 14) +
+    geom_pointrange(aes(ymin = 0, ymax = p), lwd = 1) +
+    geom_text(aes(label = confirmed), nudge_y = 0.0001, hjust = "left", size = 5) +
+    #scale_y_continuous(breaks = seq(0, 0.01, by = 0.01)) +
+    coord_flip() +
+    labs(x = NULL,
+         y = "Proportion confirmed relative to population size (text label: absolute value)",
+         subtitle = "Selection of country inactive")
+})
+```
+
+### World - top 40 confirmed
+
+```{r}
+renderPlot({
+  DATA %>% 
+    filter(date == max(date)) %>%
+    arrange(desc(confirmed)) %>% 
+    slice(1:40) %>% 
+    ggplot(aes(reorder(country, confirmed), confirmed)) +
+    theme_bw(base_size = 14) +
+    geom_pointrange(aes(ymin = 0, ymax = confirmed), lwd = 1) +   
+    #geom_text(aes(label = confirmed), nudge_y = 2, hjust = "left", size = 5) +
+    coord_flip() +
+    scale_y_log10() +
+    labs(title = "Number of confirmed cases",
+         subtitle = "Selection of country inactive",
+         x = NULL,
+         y = NULL)
+})
+```
+
+
+Deaths
+=====================================
+
+Column {.tabset}
+-------------------------------------
+
+### Testing (Number of deaths per million by day after 1 death per million)
+
+```{r}
+uiOutput("high_deaths")
+```
+
+### Europe only
+
+```{r}
+renderPlot({
+  DATA %>% 
+    filter(date == max(date),
+           country %in% countries.europa) %>% 
+    mutate(p = deaths / confirmed) %>% 
+    ggplot(aes(reorder(country, p), p)) +
+    theme_bw(base_size = 14) +
+    geom_pointrange(aes(ymin = 0, ymax = p), lwd = 1) +
+    geom_text(aes(label = deaths), nudge_y = 0.001, hjust = "left", size = 5) +
+    scale_y_continuous(breaks = seq(0, 0.2, by = 0.01)) +
+    coord_flip() +
+    labs(x = NULL,
+         y = "Proportion dead relative to numbers confirmed (text label: absolute value)",
+         subtitle = "Selection of country inactive")
+})
+```
+
+### World
+
+```{r}
+renderPlot({
+  DATA %>% 
+    filter(date == max(date),
+           deaths >= 5) %>% 
+    mutate(p = deaths / confirmed) %>% 
+    ggplot(aes(reorder(country, p), p)) +
+    theme_bw(base_size = 14) +
+    geom_pointrange(aes(ymin = 0, ymax = p), lwd = 1) +   
+    geom_text(aes(label = deaths), nudge_y = 0.001, hjust = "left", size = 5) +
+    coord_flip() +
+    scale_y_continuous(breaks = seq(0, 20, by = 0.01)) +
+    labs(x = NULL,
+         y = "Proportion dead relative to numbers confirmed (text label: absolute value)",
+         subtitle = "Selection of country inactive - Showing countries with 5 or more deaths")
+})
+```
+
+
+Info
+=====================================  
+
+Confirmed graph:
+
+* Grey lines: All european countries
+* Yellow line: Median of european countries
+* Green line: Confirmed profile of country in panel
+* Red line: Death profile of country in panel (Note: deaths higher than 1 per million only shown)
+
+Source:
+
+* [Center for Systems Science and Engineering (CSSE) at Johns Hopkins University (JHU)
+](https://gisanddata.maps.arcgis.com/apps/opsdashboard/index.html#/bda7594740fd40299423467b48e9ecf6)
+* [Our world in data](https://ourworldindata.org/covid-testing)
+
+
+SMALL PRINT: The data are heavily biased, hence making inference is not easy.
+
+The code: [github](https://gist.github.com/einarhjorleifsson/cf22ddabedcc286c05965a080ef1cb08)
