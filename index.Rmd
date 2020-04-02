@@ -20,16 +20,11 @@ runtime: shiny
 from.web <- TRUE # only use true
 from.eu <- TRUE  # only use true
 countries.selected <- 
-  c("Austria", "Belgium", "Denmark", "Estonia", "Finland", "France", 
-    "Germany", "Greece", "Hungary", "Iceland",
-    "Italy", "Latvia", "Lithuania",
-    "Moldova", "Netherlands", "Norway",
-    "Poland", "Portugal",
-    "Romania", "Russia", 
-    "Serbia", "Slovakia", "Slovenia",  "Spain",
-    "Sweden", "Switzerland",
-    "Turkey", 
-    "Ukraine", "United Kingdom", "United States")
+  c("Iceland", "Faroe Islands", "Greenland", "Norway", "Denmark",
+    "Sweden", "Finland", "Estonia", "Latvia", "Lithuania",
+    "Poland", "Germany", "Netherlands", "Belgium", "France",
+    "Austria", "Switzerland", "Italy", "Spain", "Portugal",
+    "United Kingdom", "United States")
 
 # libraries (and then some) ----------------------------------------------------
 library(lubridate)
@@ -156,7 +151,7 @@ if(from.web) {
 
 
 countries <-
-  c(countries.selected,   #Europe
+  c(countries.selected,   
     DATA %>% pull(country) %>% unique() %>% sort()) %>% 
   unique()
 
