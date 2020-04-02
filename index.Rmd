@@ -4,63 +4,164 @@ output: flexdashboard::flex_dashboard
 runtime: shiny
 ---
 
+
+```{r, eval = FALSE}
+# TODO:
+#   * case input: limit values to 1, 5, 10, 50, & 100
+#   * make DATA reactive
+#   * add deaths
+#   * link country to continent
+#   * link country to wb-statistics
+```
+
+
 ```{r global, include=FALSE}
-from.web <- FALSE
+# some controls ----------------------------------------------------------------
+from.web <- TRUE # only use true
+from.eu <- TRUE  # only use true
+countries.selected <- 
+  c("Austria", "Belgium", "Denmark", "Estonia", "Finland", "France", 
+    "Germany", "Greece", "Hungary", "Iceland",
+    "Italy", "Latvia", "Lithuania",
+    "Moldova", "Netherlands", "Norway",
+    "Poland", "Portugal",
+    "Romania", "Russia", 
+    "Serbia", "Slovakia", "Slovenia",  "Spain",
+    "Sweden", "Switzerland",
+    "Turkey", 
+    "Ukraine", "United Kingdom", "United States")
 
-# Check out:
-# https://kieranhealy.org/blog/archives/2020/03/21/covid-19-tracking
-
+# libraries (and then some) ----------------------------------------------------
 library(lubridate)
 library(highcharter)
 library(tidyverse)
 library(DT)
 library(shiny)
-source("R/functions.R")
-source("R/functions_plot.R")
-# could possibly use wb stuff below:
-countries.europa <- 
-  read_rds("data/countries_europa.rds")
-countries.europa <- countries.europa[countries.europa != "San Marino"]
 
+# functions --------------------------------------------------------------------
+read_covid2 <- function() {
+
+  # this libraries need to be installed
+  # library(httr)
+
+  #download the dataset from the ECDC website to a local temporary file
+  httr::GET("https://opendata.ecdc.europa.eu/covid19/casedistribution/csv",
+            httr::authenticate(":", ":", type="ntlm"),
+            httr::write_disk(tf <- tempfile(fileext = ".csv")))
+
+  #read the Dataset sheet into “R”. The dataset will be called "data".
+  readr::read_csv(tf) %>%
+    mutate(date = dmy(dateRep)) %>%
+    select(date,
+           confirmed = cases,
+           deaths,
+           country = countriesAndTerritories,
+           iso3c = countryterritoryCode,
+           pop = popData2018)
+
+}
+covid_doubling_time <- function(d, DAY = 0L, variable = confirmed) {
+  d %>%
+    arrange(country, desc(date)) %>%
+    group_by(country) %>%
+    mutate(DAYS = (1:n()) - 1) %>%
+    filter(DAYS >= DAY) %>%
+    select(country, date, n = {{ variable }} ) %>%
+    mutate(days = (1:n()) - 1,
+           r = n / max(n),
+           r.unique = length(unique(r))) %>%
+    filter(r.unique > 1) %>%
+    summarise(z = approx(r, days, xout = 0.5)$y) %>%
+    ungroup()
+}
+
+# getting data -----------------------------------------------------------------
 if(from.web) {
-  DATA <- 
-    read_covid(variable = "confirmed") %>% 
-    covid_tidy() %>%
-    group_by(country, iso3c, date) %>% 
-    summarise(n = sum(n)) %>% 
-    ungroup() %>% 
-    rename(confirmed = n) %>% 
-    left_join(read_covid(variable = "deaths") %>% 
-                covid_tidy() %>% 
-                group_by(country, iso3c, date) %>%
-                summarise(n = sum(n)) %>% 
-                ungroup() %>% 
-                rename(deaths = n)) %>% 
-    mutate(deaths = case_when(country == "Iceland" &
-                                date == ymd("2020-03-15") ~ 0,
-                              TRUE ~ deaths)) %>% 
-    arrange(country, date) %>% 
-    group_by(country) %>% 
-    mutate(dc = replace_na(confirmed - lag(confirmed), 0),
-           dd = replace_na(deaths - lag(deaths), 0)) %>% 
-    ungroup() %>% 
-    left_join(read_rds("data/wbstats01.rds") %>% 
-                select(iso3c, pop = population))
-  write_rds(DATA, "data/covid.rds")
+  
+  # reading in from web
+  if(from.eu) {
+    daily <- 
+      read_covid2() %>% 
+      # needs fixing
+      drop_na() %>% 
+      filter(iso3c != "N/A") %>% 
+      #filter(!is.na(country)  !is.na(iso3c), !is.na(date)) %>% 
+      rename(dc = confirmed,
+             dd = deaths)
+    # easiest would be to use complete
+    DATA <- 
+      daily %>% 
+      select(iso3c, date) %>% 
+      expand(iso3c, date) %>% 
+      left_join(daily %>% 
+                  select(iso3c, date, dc, dd)) %>% 
+      mutate(dc = ifelse(is.na(dc), 0, dc),
+             dd = ifelse(is.na(dd), 0, dd)) %>% 
+      left_join(daily %>% 
+                  select(iso3c, iso3c, pop) %>% 
+                  distinct()) %>% 
+      arrange(iso3c, date) %>% 
+      group_by(iso3c) %>% 
+      mutate(confirmed = cumsum(dc),
+             deaths = cumsum(dd),
+             country = countrycode::countrycode(iso3c,
+                                                origin = "iso3c",
+                                                destination = "country.name")) %>% 
+      ungroup() %>% 
+      select(country, iso3c, date, confirmed, deaths, dc, dd, pop) %>% 
+      mutate(country = ifelse(iso3c == "XKX", "Kosovo", country))
+    #write_rds(DATA, "data/covid_eu.rds")
+  } else {
+    DATA <- 
+      read_covid(variable = "confirmed") %>% 
+      covid_tidy() %>%
+      group_by(country, iso3c, date) %>% 
+      summarise(n = sum(n)) %>% 
+      ungroup() %>% 
+      rename(confirmed = n) %>% 
+      left_join(read_covid(variable = "deaths") %>% 
+                  covid_tidy() %>% 
+                  group_by(country, iso3c, date) %>%
+                  summarise(n = sum(n)) %>% 
+                  ungroup() %>% 
+                  rename(deaths = n)) %>% 
+      left_join(read_covid(variable = "recovered") %>% 
+                  covid_tidy() %>% 
+                  group_by(country, iso3c, date) %>%
+                  summarise(n = sum(n)) %>% 
+                  ungroup() %>% 
+                  rename(recovered = n)) %>% 
+      mutate(deaths = case_when(country == "Iceland" &
+                                  date == ymd("2020-03-15") ~ 0,
+                                TRUE ~ deaths)) %>% 
+      arrange(country, date) %>% 
+      group_by(country) %>% 
+      mutate(dc = replace_na(confirmed - lag(confirmed), 0),
+             dd = replace_na(deaths - lag(deaths), 0),
+             dr = replace_na(recovered - lag(recovered), 0)) %>% 
+      ungroup() %>% 
+      left_join(read_rds("data/wbstats01.rds") %>% 
+                  select(iso3c, pop = population)) %>% 
+      ungroup()
+    #write_rds(DATA, "data/covid_jhu.rds")
+  }
+  
 } else {
-  DATA <- read_rds("data/covid.rds")
+  if(from.eu) {
+    #DATA <- read_rds("data/covid_eu.rds")
+  } else {
+    #DATA <- read_rds("data/covid_jhu.rds")
+  }
 }
 
 
-
 countries <-
-  c(countries.europa,   #Europe
+  c(countries.selected,   #Europe
     DATA %>% pull(country) %>% unique() %>% sort()) %>% 
   unique()
 
 res <- list()
 for(i in 0L:20L) {
-  print(i)
   res[[i + 1]] <-
     DATA %>%
     covid_doubling_time(i) %>%
@@ -182,44 +283,10 @@ radioButtons("log", "Y-scale:", c("log", "ordinary"))
 numericInput("case", "Minimum cases:", value = 10, min = 1, max = 1000)
 selectInput("country", "Select country:",
             choices = countries,
-            selected = c("Austria", "Belgium", "Denmark", "Estonia", "Finland", "France", 
-                         "Germany", "Greece", "Hungary", "Iceland",
-                         "Italy", "Latvia", "Lithuania",
-                         "Moldova", "Netherlands", "Norway",
-                         "Poland",
-                         "Romania", "Russia", "Slovakia", "Slovenia",  "Spain",
-                         "Sweden", "Switzerland",  "Ukraine", "United Kingdom", "US", "Japan"),
+            selected = countries.selected,
             multiple = TRUE)
 ```
 
-```{r, eval = FALSE}
-# Not used anymore
-
-
-
-# Death - highchart ------------------------------------------------------------
-output$p_high_deaths <- renderHighchart({
-  hchart(DATAr %>% 
-           filter(country %in% input$country,
-                  day0d >= 0) %>% 
-           mutate(deaths = round(deaths, 1)),
-         "line", hcaes(x = day0d, y = deaths, group = country)) %>%
-    hc_add_theme(
-      hc_theme_flatdark(
-        chart = list(
-          backgroundColor = "transparent",
-          divBackgroundImage = "http://www.wired.com/images_blogs/underwire/2013/02/xwing-bg.gif"
-        )
-      )
-    ) %>%
-    hc_yAxis(type = "logarithmic",
-             min = 1)
-})
-
-output$high_deaths <- renderUI({
-  highchartOutput("p_high_deaths")
-})
-```
 
 
 Main
@@ -249,7 +316,7 @@ renderPlot({
     mutate(day = as.integer(date - min(date[confirmed >= case.min]))) %>%
     filter(day >= 0) %>% 
     ungroup()
-
+  
   x.max <- d100  %>% pull(day) %>% max()
   y.max <- max(d100$confirmed)
   d.highlight <-
@@ -330,7 +397,6 @@ renderPlot({
 ```{r}
 renderHighchart({
   
-  
   d100 <-
     DATA %>% 
     filter(country %in% input$country)
@@ -381,6 +447,7 @@ renderPlot({
   d100 <-
     DATA %>% 
     filter(country %in% input$country)
+  
   if(input$scale == "relative") {
     d100 <- 
       d100 %>% 
@@ -402,10 +469,10 @@ renderPlot({
   if(input$log == "log") {
     d100 <-
       d100 %>% 
-      mutate(dc = ifelse(dc < 1, 1, dc),
-             dd = ifelse(dd < 1, 1, dd))
+      mutate(dc = if_else(dc < 1, 1, dc, NA_real_),
+             dd = if_else(dd < 1, 1, dd, NA_real_))
   }
-
+  
   
   x.max <- d100  %>% pull(day) %>% max()
   y.max <- max(d100$dc)
@@ -434,6 +501,8 @@ renderPlot({
            ifelse(input$scale == "relative", " per million ", ""))
   p <- 
     d100 %>% 
+    mutate(dc = ifelse(dc == 0, NA, dc),
+           dd = ifelse(dd == 0, NA, dd)) %>% 
     ggplot() +
     theme_bw(base_size = 12) +
     theme(panel.grid.minor = element_line(colour = "white"),
@@ -453,10 +522,10 @@ renderPlot({
          subtitle = my.subtitle)
   
   if(input$log == "log") {
-    p + scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000, 10000, 100000),
-                      labels = c("0.1", "1", "10", "100", "1K", "10K", "100K"),
-                      #limits = c(input$case, NA),
-                      expand = c(0, 0))
+    p + scale_y_log10(#limits = c(input$case, NA),
+      #expand = c(0, 0),
+      breaks = c( 0.1, 1, 3, 10, 35, 100, 350, 1000, 3500, 10000, 100000),
+      labels = c("0.1", "1", "3", "10", "35", "100", "350", "1K", "3.5K", "10K", "100K"))
   } else {
     p
   }
@@ -510,16 +579,19 @@ renderPlot({
     mutate(dc.cut = cut(dc, breaks = c(0, 10, 50, 100, 250, 500, 1000, 5000, 25000))) %>% 
     ggplot(aes(reorder(country, cur.case), date)) +
     theme_bw(base_size = 12) +
-    theme(panel.grid = element_line(colour = "white")) +
+    theme(panel.grid = element_line(colour = "white"),
+          plot.subtitle = element_text(hjust = 1)) +
     geom_tile(aes(fill =  dc.cut), colour = "white") +
     geom_text(data = tile.last, aes(label = dcl), colour = "white" ) +
+    scale_y_date(expand = c(0, 0)) +
+    scale_x_discrete(position = "top") +
     scale_fill_viridis_d(option = "D", direction = -1,
                          guide = guide_legend(reverse = TRUE)) +
     coord_flip() +
     labs(x = NULL, y = NULL,
-         title = "Confirmed cases, two-day rolling average",
          fill = paste0("Cases", ifelse(input$scale == "relative", " \nper million", "")),
-         subtitle = "Top 35 nations, ordered by cases on most recent date")
+         title = "Confirmed cases, top 35 nations: two-day rolling average",
+         subtitle = "Confirmed")
 })
 ```
 
@@ -527,30 +599,45 @@ renderPlot({
 
 ```{r}
 renderPlot({
-  confirmed.double %>% 
+  d200 <- 
+    confirmed.double %>% 
     filter(country %in% input$country) %>% 
-    filter(day %in% c(0)) %>% 
+    filter(day %in% c(0)) %>%
     left_join(DATA %>% 
-                filter(date == max(date)) %>% 
+                filter(date == max(date)) %>%
                 select(country, confirmed)) %>% 
+    mutate(label = paste(paste(country, round(z, 1))))
+  d.confirmed <- 
+    d200 %>% 
+    mutate(z.max = max(z) * 1.1,
+           label = paste(confirmed))
+  
+  d200 %>% 
     ggplot() +
-    theme_bw(base_size = 12) +
-    geom_pointrange(aes(reorder(country, desc(z)), 
-                    z,
-                    ymin = 1,
-                    ymax = z)) +
-     geom_text(aes(reorder(country, desc(z)),
+    theme_bw(base_size = 14) +
+    theme(panel.grid.major.y = element_line(colour = "white"),
+          panel.grid.major.x = element_line(colour = "white"),
+          plot.subtitle = element_text(hjust = 1)) +
+    geom_point(aes(reorder(country, desc(z)), z)) +
+    geom_text(aes(reorder(country, desc(z)),
                   z,
-                  label = confirmed),
-              nudge_y = 0.1, hjust = "left", size = 4,
-              colour = "red") +
-    scale_y_continuous(breaks = seq(0, 15, by = 1)) +
+                  label = label),
+              nudge_y = 0.05, hjust = "left", size = 4,
+              colour = "red3") +
+    geom_text(data = d.confirmed,
+              aes(reorder(country, desc(z)),
+                  z.max,
+                  label = label),
+              nudge_y = 0.05, hjust = "right", size = 4) +
+    scale_y_continuous(breaks = seq(1, 15, by = 0.5),
+                       expand = c(0, 0.05)) +
+    scale_x_discrete(position = "top") +
     coord_flip() +
     theme(legend.position = "none") +
     labs(x = NULL,
          y = NULL,
          title = "Current doubling time [days] of selected countries",
-         subtitle = "Confirmed cases [red lable]")
+         subtitle = "Confirmed")
 })
 ```
 
@@ -558,32 +645,106 @@ renderPlot({
 
 ```{r}
 renderPlot({
-  DATA %>% 
+  d200 <- 
+    DATA %>% 
     filter(date == max(date),
            confirmed >= 100) %>% 
     select(country, confirmed) %>% 
     left_join(confirmed.double %>% 
                 filter(day %in% c(0))) %>% 
+    mutate(label = paste(paste(country, round(z, 1)))) %>% 
     arrange(z) %>% 
-    slice(1:35) %>% 
+    slice(1:35)
+  d.confirmed <- 
+    d200 %>% 
+    mutate(z.max = max(z) * 1.1,
+           label = paste(confirmed))
+  
+  d200 %>% 
     ggplot() +
-    theme_bw(base_size = 12) +
-    geom_pointrange(aes(reorder(country, desc(z)), 
-                    z,
-                    ymin = 1,
-                    ymax = z)) +
+    theme_bw(base_size = 14) +
+    theme(panel.grid.major.y = element_line(colour = "white"),
+          panel.grid.major.x = element_line(colour = "white"),
+          plot.subtitle = element_text(hjust = 1)) +
+    geom_point(aes(reorder(country, desc(z)), z)) +
     geom_text(aes(reorder(country, desc(z)),
                   z,
-                  label = confirmed),
-              nudge_y = 0.1, hjust = "left", size = 4,
-              colour = "red") +
-    scale_y_continuous(breaks = seq(0, 15, by = 0.5)) +
+                  label = label),
+              nudge_y = 0.05, hjust = "left", size = 4,
+              colour = "red3") +
+    geom_text(data = d.confirmed,
+              aes(reorder(country, desc(z)),
+                  z.max,
+                  label = label),
+              nudge_y = 0.05, hjust = "right", size = 4) +
+    scale_y_continuous(breaks = seq(1, 15, by = 0.25),
+                       expand = c(0, 0.05)) +
+    scale_x_discrete(position = "top") +
     coord_flip() +
     theme(legend.position = "none") +
     labs(x = NULL,
          y = NULL,
-         title = "Global: Current doubling time [days]",
-         subtitle = "Top 35 fasted times - limited to countries with 100 or more confirmed cases [red lable]")
+         title = "Global: Current top 35 doubling time [days]",
+         subtitle = "Confirmed")
 })
 ```
+
+
+Tests
+=====================================  
+
+Column {.tabset}
+-------------------------------------
+
+### Tests per million
+
+```{r}
+renderPlot({
+  con <- httr::GET("https://en.wikipedia.org/wiki/COVID-19_testing")
+  
+  tmp <-
+    con %>%
+    xml2::read_html() %>%
+    rvest::html_nodes("table")
+  tests <-
+    rvest::html_table(tmp[4]) %>% as.data.frame() %>%
+    janitor::clean_names() %>%
+    tibble::as_tibble() %>%
+    dplyr::select(-ref) %>%
+    dplyr::rename(confirmed = positive,
+                  date = as_of,
+                  tests.pm = tests_millionpeople,
+                  positive.pt = positive_thousandtests) %>%
+    dplyr::mutate(date = lubridate::dmy(paste0(date, " 2020")),
+                  tests = stringr::str_replace_all(tests, "\\*", ""),
+                  tests = as.integer(stringr::str_replace_all(tests, ",", "")),
+                  confirmed = as.integer(stringr::str_replace_all(confirmed, ",", "")),
+                  tests.pm = as.integer(stringr::str_replace_all(tests.pm, ",", "")),
+                  positive.pt = as.integer(stringr::str_replace_all(positive.pt, ",", "")))
+  
+  tests %>%
+    filter(!(str_starts(country_or_region, c("Canada:")))) %>%
+    filter(!str_starts(country_or_region, c("United States:"))) %>%
+    filter(!str_starts(country_or_region, c("Italy:"))) %>%
+    arrange(desc(tests.pm)) %>%
+    slice(1:50) %>%
+    mutate(country2 = paste(country_or_region, tests.pm)) %>%
+    ggplot(aes(reorder(country_or_region, tests.pm), tests.pm)) +
+    theme_minimal(base_size = 12) +
+    theme(panel.grid.major.y = element_line(colour = "white")) +
+    geom_point() +
+    geom_text(aes(label = country2),
+              nudge_y = 500, hjust = "left", size = 3,
+              colour = "red3") +
+    scale_y_continuous(position = "right",
+                       breaks = seq(0, 70000, by = 5000),
+                       name = "Number of tests per million",
+                       lim = c(0, 65000),
+                       sec.axis = sec_axis(~ .,
+                                           breaks = seq(0, 70000, by = 5000))) +
+    scale_x_discrete(NULL, NULL) +
+    coord_flip()
+})
+```
+
 
