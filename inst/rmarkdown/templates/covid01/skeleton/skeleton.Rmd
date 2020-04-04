@@ -1,0 +1,316 @@
+---
+title: "Kóvitinn"
+output: flexdashboard::flex_dashboard
+runtime: shiny
+---
+
+
+```{r, eval = FALSE}
+# TODO:
+#   * case input: limit values to 1, 5, 10, 50, & 100
+#   * make DATA reactive
+#   * add deaths
+#   * link country to continent
+#   * link country to wb-statistics
+```
+
+
+```{r global, include=FALSE}
+# some controls ----------------------------------------------------------------
+from.web <- TRUE # only use true
+data.source <- "ecdc" #or jhu
+countries.selected <- 
+  c("Iceland", "Faroe Islands", "Greenland", "Norway", "Denmark",
+    "Sweden", "Finland", "Estonia", "Latvia", "Lithuania",
+    "Poland", "Germany", "Netherlands", "Belgium", "France",
+    "Austria", "Switzerland", "Italy", "Spain", "Portugal",
+    "United Kingdom", "United States")
+
+# libraries (and then some) ----------------------------------------------------
+library(kovitinn)
+library(highcharter)
+library(DT)
+library(shiny)
+library(lubridate)
+library(tidyverse)
+# function
+covid_doubling_time <- function(d, DAY = 0L, variable = confirmed) {
+  d %>%
+    spread(type, cn) %>% 
+    arrange(country, desc(date)) %>%
+    group_by(country) %>%
+    mutate(DAYS = (1:n()) - 1) %>%
+    filter(DAYS >= DAY) %>%
+    select(country, date, n = {{ variable }} ) %>%
+    mutate(days = (1:n()) - 1,
+           r = n / max(n),
+           r.unique = length(unique(r))) %>%
+    filter(r.unique > 1) %>%
+    summarise(z = approx(r, days, xout = 0.5)$y) %>%
+    ungroup()
+}
+DATA <- 
+  get_covid("ecdc") %>% 
+  left_join(world_population %>% 
+              select(iso3c, pop),
+            by = "iso3c")
+countries <-
+  c(countries.selected,   
+    DATA %>% pull(country) %>% unique() %>% sort()) %>% 
+  unique()
+
+# res <- list()
+# for(i in 0L:20L) {
+#   print(i)
+#   res[[i + 1]] <-
+#     DATA %>%
+#     covid_doubling_time(i) %>%
+#     mutate(day = i)
+# }
+
+# confirmed.double <-
+#   bind_rows(res)
+
+last.date <- DATA %>% pull(date) %>% max()
+```
+
+Sidebar {.sidebar data-width=175}
+=====================================
+
+Most recent date: `r as.character(last.date)`
+
+```{r}
+radioButtons("scale", "Statistic:", c("relative", "absolute"))
+radioButtons("log", "Y-scale:", c("log", "ordinary"))
+numericInput("case", "Minimum cases:", value = 10, min = 1, max = 1000)
+selectInput("country", "Select country:",
+            choices = countries,
+            selected = countries.selected,
+            multiple = TRUE)
+```
+
+
+
+Main
+=====================================  
+
+Column {.tabset}
+-------------------------------------
+
+### Cumulative
+
+```{r}
+renderPlot({ 
+  d100 <-
+    DATA %>% 
+    filter(country %in% input$country)
+  if(input$scale == "relative") {
+    d100 <- 
+      d100 %>% 
+      mutate(n = n / pop * 1e6,
+             cn = cn / pop * 1e6)
+  }
+  d100 <- 
+    d100 %>% 
+    select(country, date, type, cn) %>% 
+    spread(type, cn)
+  
+  d100 <- 
+    d100 %>% 
+    mutate(case.min = input$case) %>%
+    arrange(country, date) %>%
+    group_by(country) %>%
+    mutate(day = as.integer(date - min(date[confirmed >= case.min]))) %>%
+    filter(day >= 0) %>% 
+    ungroup()
+  
+  x.max <- d100  %>% pull(day) %>% max()
+  y.max <- max(d100$confirmed)
+  d.highlight <-
+    d100 %>%
+    filter(country %in% countries) %>%
+    rename(fcountry = country)
+  
+  d.median <-
+    d100 %>%
+    filter(country %in% countries) %>%
+    group_by(day) %>%
+    summarise(confirmed = median(confirmed)) %>%
+    ungroup()
+  
+  CASE.MIN <-
+    dplyr::case_when(input$case  ==  1 ~ paste0(input$case, "st"),
+                     input$case  ==  2 ~ paste0(input$case, "nd"),
+                     input$case  ==  3 ~ paste0(input$case, "rd"),
+                     TRUE ~ paste0(input$case, "th"))
+  
+  my.subtitle <- 
+    paste0("Cumulative number of confirmed cases and deaths",
+           ifelse(input$scale == "relative", " per million ", " "),
+           "by number of days since ", CASE.MIN, " case",
+           ifelse(input$scale == "relative", " per million ", ""))
+  
+  p <- 
+    ggplot() +
+    theme_bw(base_size = 12) +
+    theme(panel.grid.minor = element_line(colour = "white"),
+          strip.text = element_text(hjust = 0),
+          axis.ticks.length.y = unit(.0001, "cm"),
+          axis.ticks.length.x = unit(.0001, "cm"),
+          panel.spacing = unit(0.3, "lines"),
+          strip.background = element_blank(),
+          strip.text.x = element_text(size = 11, hjust = 0, colour = "red4",
+                                      margin = margin(0,0,0,0, "cm"))) +
+    geom_line(data = d100 %>% filter(country %in% countries),
+              aes(day, confirmed, group = country),
+              colour = "grey")
+  if(input$scale == "relative") {
+    p <- 
+      p +
+      geom_smooth(data = d.median,
+                  aes(day, confirmed),
+                  colour = "yellow",
+                  se = FALSE,
+                  lwd = 2)
+  }
+  p <- 
+    p +
+    geom_line(data = d.highlight,
+              aes(day, confirmed),
+              colour = "red4") +
+    geom_line(data = d.highlight,
+              aes(day, deaths),
+              colour = "red") +
+    scale_x_continuous(limits = c(0, x.max),
+                       expand = c(0, 0)) +
+    facet_wrap(~ fcountry) +
+    labs(x = NULL, y = NULL,
+         subtitle = my.subtitle)
+  
+  if(input$log == "log") {
+    p + scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000, 10000, 100000),
+                      labels = c("0.1", "1", "10", "100", "1K", "10K", "100K"),
+                      limits = c(input$case, NA),
+                      expand = c(0, 0))
+  } else {
+    p
+  }
+  
+})
+```
+
+### Daily
+
+```{r}
+renderPlot({ 
+  d100 <-
+    DATA %>% 
+    filter(country %in% input$country)
+  if(input$scale == "relative") {
+    d100 <- 
+      d100 %>% 
+      mutate(n = n / pop * 1e6,
+             cn = cn / pop * 1e6)
+  }
+  d100 <- 
+    d100 %>% 
+    select(country, date, type, n) %>% 
+    filter(n > 0) %>% 
+    spread(type, n)
+  
+  d100 <- 
+    d100 %>% 
+    mutate(case.min = input$case) %>%
+    arrange(country, date) %>%
+    group_by(country) %>%
+    mutate(day = as.integer(date - min(date[confirmed >= case.min]))) %>%
+    filter(day >= 0) %>% 
+    ungroup()
+  
+  x.max <- d100  %>% pull(day) %>% max()
+  y.max <- max(d100$confirmed)
+  d.highlight <-
+    d100 %>%
+    filter(country %in% countries) %>%
+    rename(fcountry = country)
+  
+  d.median <-
+    d100 %>%
+    filter(country %in% countries) %>%
+    group_by(day) %>%
+    summarise(confirmed = median(confirmed)) %>%
+    ungroup()
+  
+  CASE.MIN <-
+    dplyr::case_when(input$case  ==  1 ~ paste0(input$case, "st"),
+                     input$case  ==  2 ~ paste0(input$case, "nd"),
+                     input$case  ==  3 ~ paste0(input$case, "rd"),
+                     TRUE ~ paste0(input$case, "th"))
+  
+  my.subtitle <- 
+    paste0("Daily number of confirmed cases and deaths",
+           ifelse(input$scale == "relative", " per million ", " "),
+           "by number of days since ", CASE.MIN, " case",
+           ifelse(input$scale == "relative", " per million ", ""))
+  
+  p <- 
+    ggplot() +
+    theme_bw(base_size = 12) +
+    theme(panel.grid.minor = element_line(colour = "white"),
+          strip.text = element_text(hjust = 0),
+          axis.ticks.length.y = unit(.0001, "cm"),
+          axis.ticks.length.x = unit(.0001, "cm"),
+          panel.spacing = unit(0.3, "lines"),
+          strip.background = element_blank(),
+          strip.text.x = element_text(size = 11, hjust = 0, colour = "red4",
+                                      margin = margin(0,0,0,0, "cm"))) # +
+    #geom_line(data = d100 %>% filter(country %in% countries),
+    #          aes(day, confirmed, group = country),
+    #          colour = "grey")
+  if(input$scale == "relative") {
+    p <- 
+      p +
+      geom_smooth(data = d.median,
+                  aes(day, confirmed),
+                  colour = "yellow",
+                  se = FALSE,
+                  lwd = 2)
+  }
+  p <- 
+    p +
+    
+    geom_point(data = d.highlight,
+              aes(day, confirmed),
+              colour = "red4",
+              size = 1) +
+    geom_smooth(data = d.highlight,
+              aes(day, confirmed),
+              colour = "red4",
+              se = FALSE,
+              lwd = 0.3) +
+    geom_point(data = d.highlight,
+              aes(day, deaths),
+              colour = "red",
+              size = 1) +
+    geom_smooth(data = d.highlight,
+              aes(day, deaths),
+              colour = "red",
+              se = FALSE,
+              lwd = 0.3) +
+    scale_x_continuous(limits = c(0, x.max),
+                       expand = c(0, 0)) +
+    facet_wrap(~ fcountry) +
+    labs(x = NULL, y = NULL,
+         subtitle = my.subtitle)
+  
+  if(input$log == "log") {
+    p + scale_y_log10(breaks = c(0.1, 1, 10, 100, 1000, 10000, 100000),
+                      labels = c("0.1", "1", "10", "100", "1K", "10K", "100K"),
+                      limits = c(input$case, NA),
+                      expand = c(0, 0))
+  } else {
+    p
+  }
+  
+})
+```

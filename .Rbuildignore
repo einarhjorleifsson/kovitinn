@@ -1,0 +1,7 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+older
+R_older
+index.Rmd
+rsconnect
+data-raw
