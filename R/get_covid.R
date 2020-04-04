@@ -5,13 +5,11 @@
 #' @return dataframe
 #' @export
 #'
-get_covid <- function(source = c("ecdc", "jhu")) {
+get_covid <- function(source = c("ecdc", "jhu", "us")) {
 
-  if(source == "ecdc") {
-    d <- get_covid_ecdc()
-  } else {
-    d <- get_covid_jhu()
-  }
+  if(source == "ecdc") d <- get_covid_ecdc()
+  if(source == "jhu")  d <- get_covid_jhu()
+  if(source == "us")   d <- get_covid_us()
 
   return(d)
 
@@ -116,6 +114,44 @@ get_covid_jhu <- function() {
                                         TRUE ~ cn)) %>%
     dplyr::arrange(country, variable, date) %>%
     dplyr::group_by(country, variable) %>%
+    dplyr::mutate(n = dplyr::lead(cn) - cn,
+                  n = tidyr::replace_na(n, 0)) %>%
+    dplyr::ungroup()
+}
+
+#' get US covid data from JHU
+#'
+#' John Hopkins University
+#'
+#' @return a tibble
+#' @export
+#'
+get_covid_us <- function() {
+
+  lh <- function(what) {
+
+    url <-
+             "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+      paste0("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/",
+             "time_series_covid19_",
+             what,
+             "_US.csv")
+    readr::read_csv(url) %>%
+      dplyr::mutate(variable = what)
+  }
+
+  d <-
+    purrr::map_df(c("confirmed", "deaths"), lh)
+  d %>%
+    tidyr::pivot_longer(cols = -c(UID:Combined_Key, variable), names_to = "date", values_to = "cn") %>%
+    janitor::clean_names() %>%
+    dplyr::mutate(country = stringr::str_squish(country_region),
+                  province = stringr::str_squish(province_state),
+                  date = lubridate::mdy(date),
+                  country = "United States") %>%
+    dplyr::mutate(source = "jhu") %>%
+    dplyr::arrange(country, province, variable, date) %>%
+    dplyr::group_by(country, province, variable) %>%
     dplyr::mutate(n = dplyr::lead(cn) - cn,
                   n = tidyr::replace_na(n, 0)) %>%
     dplyr::ungroup()

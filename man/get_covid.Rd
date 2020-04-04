@@ -4,7 +4,7 @@
 \alias{get_covid}
 \title{Title}
 \usage{
-get_covid(source = c("ecdc", "jhu"))
+get_covid(source = c("ecdc", "jhu", "us"))
 }
 \arguments{
 \item{source}{either "ecdc" or "jhu"}

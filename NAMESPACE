@@ -3,4 +3,5 @@
 export(get_covid)
 export(get_covid_ecdc)
 export(get_covid_jhu)
+export(get_covid_us)
 importFrom(magrittr,"%>%")

@@ -14,6 +14,7 @@ Imports:
     countrycode,
     dplyr,
     httr,
+    janitor,
     lubridate,
     magrittr,
     purrr,
