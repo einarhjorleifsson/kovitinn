@@ -1,24 +1,16 @@
----
-title: "Kóvitinn"
-output: 
-  html_document: 
-    fig_height: 6
-    fig_width: 9
-    keep_md: yes
----
+# Kóvitinn
 
 
+Easing access and exploration of COVID-19 data. Includes a rudimentary dashboard
 
-Easing access and exploration of COVID-19 data
-
-## Installing
+### Installing
 
 
 ```r
 remotes::install_github("einarhjorleifsson/kovitinn")
 ```
 
-## Get data
+### Get data
 
 
 ```r
@@ -36,7 +28,7 @@ d3 <- get_covid("us")
 ```
 
 
-## Quick plots
+### Quick plots
 
 
 ```r
@@ -84,7 +76,7 @@ d %>%
 
 ![](README_files/figure-html/dailyconfirmed-1.png)<!-- -->
 
-## Flexdashboard
+### Flexdashboard
 
 Go: File -> New file -> R Markdown ... -> From template -> covid dashboard
 
